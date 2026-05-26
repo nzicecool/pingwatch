@@ -283,6 +283,72 @@ class Storage:
             (last_period, now),
         )
 
+    async def get_rollup(
+        self,
+        target: str,
+        period: str = "5min",
+        since: float | None = None,
+        until: float | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Query rollup data for a target.
+
+        Args:
+            target: Target name.
+            period: One of '5min', '1hour', '1day'.
+            since: Start timestamp (epoch).
+            until: End timestamp (epoch).
+            limit: Max rows to return.
+        """
+        table_map = {
+            "5min": "measurements_5min",
+            "1hour": "measurements_1hour",
+            "1day": "measurements_1day",
+        }
+        table = table_map.get(period)
+        if not table:
+            raise ValueError(f"Invalid period '{period}'. Use 5min, 1hour, or 1day.")
+
+        query = f"SELECT * FROM {table} WHERE target_name = ?"
+        params: list[Any] = [target]
+
+        if since:
+            query += " AND period_start >= ?"
+            params.append(since)
+        if until:
+            query += " AND period_start <= ?"
+            params.append(until)
+
+        query += " ORDER BY period_start ASC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self.db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_targets_list(self) -> list[dict[str, Any]]:
+        """Get distinct target names with probe types and latest stats."""
+        cursor = await self.db.execute(
+            """
+            SELECT
+                m.target_name,
+                m.probe_type,
+                m.median_ms,
+                m.loss_pct,
+                m.jitter_ms,
+                m.timestamp
+            FROM measurements m
+            INNER JOIN (
+                SELECT target_name, MAX(timestamp) as max_ts
+                FROM measurements
+                GROUP BY target_name
+            ) latest ON m.target_name = latest.target_name AND m.timestamp = latest.max_ts
+            ORDER BY m.target_name
+            """
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
     async def prune(self, retention_days: int = 365) -> None:
         """Remove old measurements beyond retention period."""
         cutoff = time.time() - (retention_days * 86400)

@@ -52,6 +52,18 @@ def build_parser() -> argparse.ArgumentParser:
         "-c", "--config", required=True, help="Path to config YAML file"
     )
 
+    # serve
+    serve_parser = subparsers.add_parser("serve", help="Start API + dashboard server")
+    serve_parser.add_argument(
+        "-c", "--config", required=True, help="Path to config YAML file"
+    )
+    serve_parser.add_argument(
+        "--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)"
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=8080, help="Bind port (default: 8080)"
+    )
+
     return parser
 
 
@@ -104,6 +116,41 @@ async def run_daemon(config_path: str, once: bool = False) -> None:
     logger.info("shutdown.complete")
 
 
+async def run_serve(config_path: str, host: str = "0.0.0.0", port: int = 8080) -> None:
+    """Run the API server with background scheduler."""
+    import uvicorn
+
+    config = load_config(config_path)
+    storage = Storage(config.storage.path)
+    await storage.connect()
+    logger.info("storage.connected", path=config.storage.path)
+
+    # Start scheduler in background
+    scheduler = ProbeScheduler(config, storage)
+    scheduler.initialise()
+    await scheduler.start()
+    logger.info("scheduler.started_in_background")
+
+    # Create FastAPI app with storage
+    from pingwatch.api.app import create_app
+    app = create_app(storage)
+
+    # Configure uvicorn
+    uv_config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    server = uvicorn.Server(uv_config)
+
+    logger.info("api.starting", host=host, port=port)
+
+    try:
+        await server.serve()
+    except Exception:
+        pass
+    finally:
+        await scheduler.stop()
+        await storage.close()
+        logger.info("shutdown.complete")
+
+
 def main() -> None:
     """CLI entry point."""
     parser = build_parser()
@@ -120,6 +167,8 @@ def main() -> None:
         except Exception as e:
             print(f"❌ Config error: {e}")
             sys.exit(1)
+    elif args.command == "serve":
+        asyncio.run(run_serve(args.config, host=args.host, port=args.port))
     else:
         parser.print_help()
 

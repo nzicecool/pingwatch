@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PingWatch — Network Latency Monitor</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --border: #2a2d3a;
+            --text: #e0e0e0;
+            --text-muted: #888;
+            --accent: #4fc3f7;
+            --accent-dim: #1e3a4f;
+            --red: #ef5350;
+            --green: #66bb6a;
+            --amber: #ffa726;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        header h1 {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--accent);
+        }
+        header h1 span { color: var(--text-muted); font-weight: 400; }
+        .header-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .time-btn {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.15s;
+        }
+        .time-btn:hover { border-color: var(--accent); color: var(--text); }
+        .time-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+        .container { display: flex; min-height: calc(100vh - 52px); }
+        aside {
+            width: 220px;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        aside h2 {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            padding: 12px 16px 8px;
+        }
+        .target-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            border-left: 3px solid transparent;
+            transition: all 0.15s;
+            font-size: 13px;
+        }
+        .target-item:hover { background: rgba(255,255,255,0.03); }
+        .target-item.active {
+            border-left-color: var(--accent);
+            background: rgba(79, 195, 247, 0.06);
+        }
+        .target-item .label { font-weight: 500; margin-bottom: 2px; }
+        .target-item .meta { font-size: 11px; color: var(--text-muted); }
+        .target-item .latency { color: var(--green); }
+        .target-item .latency.warn { color: var(--amber); }
+        .target-item .latency.bad { color: var(--red); }
+        main { flex: 1; padding: 16px; overflow-y: auto; }
+        .overview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .spark-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .spark-card:hover { border-color: var(--accent); }
+        .spark-card.active { border-color: var(--accent); background: var(--accent-dim); }
+        .spark-card .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .spark-card .card-header .name { font-weight: 600; font-size: 14px; }
+        .spark-card .card-header .probe-type {
+            font-size: 11px;
+            color: var(--text-muted);
+            background: rgba(255,255,255,0.05);
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+        .spark-card .card-stats {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .spark-card .card-stats .val { color: var(--text); font-weight: 500; }
+        .detail-view { display: none; }
+        .detail-view.visible { display: block; }
+        .detail-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .detail-header h2 { font-size: 20px; }
+        .back-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .back-btn:hover { border-color: var(--accent); }
+        #detail-chart { width: 100%; height: 500px; }
+        .loading {
+            text-align: center;
+            color: var(--text-muted);
+            padding: 40px;
+            font-size: 14px;
+        }
+        .no-data {
+            text-align: center;
+            color: var(--text-muted);
+            padding: 60px 20px;
+        }
+        .no-data h3 { margin-bottom: 8px; }
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+        .status-dot.ok { background: var(--green); }
+        .status-dot.warn { background: var(--amber); }
+        .status-dot.bad { background: var(--red); }
+
+        @media (max-width: 768px) {
+            aside { display: none; }
+            .overview-grid { grid-template-columns: 1fr; }
+            #detail-chart { height: 350px; }
+            header { padding: 10px 12px; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>📡 PingWatch <span>Network Monitor</span></h1>
+        <div class="header-controls">
+            <button class="time-btn active" data-range="1h">1H</button>
+            <button class="time-btn" data-range="6h">6H</button>
+            <button class="time-btn" data-range="24h">24H</button>
+            <button class="time-btn" data-range="7d">7D</button>
+            <button class="time-btn" data-range="30d">30D</button>
+        </div>
+    </header>
+    <div class="container">
+        <aside id="sidebar">
+            <h2>Targets</h2>
+            <div id="target-list"></div>
+        </aside>
+        <main>
+            <div id="overview-view">
+                <div id="overview-grid" class="overview-grid"></div>
+            </div>
+            <div id="detail-view" class="detail-view">
+                <div class="detail-header">
+                    <h2 id="detail-title"></h2>
+                    <button class="back-btn" onclick="showOverview()">← All Targets</button>
+                </div>
+                <div id="detail-chart"></div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const API = '';
+        let currentRange = '1h';
+        let currentTarget = null;
+        let targets = [];
+        let refreshTimer = null;
+
+        const rangeMap = {
+            '1h': 3600,
+            '6h': 21600,
+            '24h': 86400,
+            '7d': 604800,
+            '30d': 2592000,
+        };
+
+        const periodForRange = {
+            '1h': '5min',
+            '6h': '5min',
+            '24h': '1hour',
+            '7d': '1hour',
+            '30d': '1day',
+        };
+
+        // --- API helpers ---
+        async function fetchJSON(url) {
+            const resp = await fetch(API + url);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            return resp.json();
+        }
+
+        // --- Rendering ---
+        function latencyClass(ms) {
+            if (ms === null || ms === undefined) return '';
+            if (ms < 50) return '';
+            if (ms < 200) return 'warn';
+            return 'bad';
+        }
+
+        function formatLatency(ms) {
+            if (ms === null || ms === undefined) return '—';
+            return ms.toFixed(1) + ' ms';
+        }
+
+        function formatLoss(pct) {
+            if (pct === null || pct === undefined) return '—';
+            return pct.toFixed(1) + '%';
+        }
+
+        function statusClass(lossPct) {
+            if (lossPct === null || lossPct === undefined) return 'ok';
+            if (lossPct > 10) return 'bad';
+            if (lossPct > 2) return 'warn';
+            return 'ok';
+        }
+
+        function renderSidebar() {
+            const list = document.getElementById('target-list');
+            list.innerHTML = targets.map(t => {
+                const active = currentTarget === t.target_name ? 'active' : '';
+                const sc = statusClass(t.loss_pct);
+                const lc = latencyClass(t.median_ms);
+                return `
+                    <div class="target-item ${active}" onclick="selectTarget('${t.target_name}')">
+                        <div class="label"><span class="status-dot ${sc}"></span>${t.target_name}</div>
+                        <div class="meta">
+                            <span class="latency ${lc}">${formatLatency(t.median_ms)}</span>
+                            · Loss: ${formatLoss(t.loss_pct)}
+                            · ${t.probe_type}
+                        </div>
+                    </div>`;
+            }).join('');
+        }
+
+        function renderOverview() {
+            const grid = document.getElementById('overview-grid');
+            if (targets.length === 0) {
+                grid.innerHTML = '<div class="no-data"><h3>No targets found</h3><p>Start the PingWatch daemon to begin monitoring.</p></div>';
+                return;
+            }
+            grid.innerHTML = targets.map(t => {
+                const active = currentTarget === t.target_name ? 'active' : '';
+                return `
+                    <div class="spark-card ${active}" onclick="selectTarget('${t.target_name}')">
+                        <div class="card-header">
+                            <span class="name"><span class="status-dot ${statusClass(t.loss_pct)}"></span>${t.target_name}</span>
+                            <span class="probe-type">${t.probe_type}</span>
+                        </div>
+                        <div id="spark-${t.target_name.replace(/[^a-zA-Z0-9]/g,'_')}" style="height:60px;"></div>
+                        <div class="card-stats" style="margin-top:6px;">
+                            <span>Median: <span class="val">${formatLatency(t.median_ms)}</span></span>
+                            <span>Loss: <span class="val">${formatLoss(t.loss_pct)}</span></span>
+                            <span>Jitter: <span class="val">${formatLatency(t.jitter_ms)}</span></span>
+                        </div>
+                    </div>`;
+            }).join('');
+
+            // Draw sparklines
+            targets.forEach(t => {
+                const elId = 'spark-' + t.target_name.replace(/[^a-zA-Z0-9]/g, '_');
+                loadSparkline(t.target_name, elId);
+            });
+        }
+
+        async function loadSparkline(target, elId) {
+            const el = document.getElementById(elId);
+            if (!el) return;
+            try {
+                const rangeSec = rangeMap[currentRange];
+                const since = Math.floor(Date.now() / 1000) - rangeSec;
+                const period = periodForRange[currentRange];
+                const data = await fetchJSON(`/api/targets/${encodeURIComponent(target)}/rollup?period=${period}&since=${since}&limit=200`);
+                if (!data.data || data.data.length === 0) return;
+
+                const x = data.data.map(d => new Date(d.period_start * 1000));
+                const y = data.data.map(d => d.median_ms);
+
+                Plotly.newPlot(el, [{
+                    x, y,
+                    type: 'scatter',
+                    mode: 'lines',
+                    line: { color: '#4fc3f7', width: 1.5 },
+                    fill: 'tozeroy',
+                    fillcolor: 'rgba(79,195,247,0.1)',
+                }], {
+                    margin: { l: 0, r: 0, t: 0, b: 0 },
+                    xaxis: { visible: false },
+                    yaxis: { visible: false },
+                    paper_bgcolor: 'transparent',
+                    plot_bgcolor: 'transparent',
+                    showlegend: false,
+                }, { displayModeBar: false, responsive: true });
+            } catch (e) {
+                // Silently fail for sparklines
+            }
+        }
+
+        async function renderDetail(target) {
+            document.getElementById('detail-title').textContent = target;
+            document.getElementById('overview-view').style.display = 'none';
+            document.getElementById('detail-view').classList.add('visible');
+
+            const chartEl = document.getElementById('detail-chart');
+            chartEl.innerHTML = '<div class="loading">Loading data...</div>';
+
+            try {
+                const rangeSec = rangeMap[currentRange];
+                const since = Math.floor(Date.now() / 1000) - rangeSec;
+                const period = periodForRange[currentRange];
+
+                // Use rollup data for the main chart
+                const data = await fetchJSON(`/api/targets/${encodeURIComponent(target)}/rollup?period=${period}&since=${since}&limit=2000`);
+
+                if (!data.data || data.data.length === 0) {
+                    chartEl.innerHTML = '<div class="no-data"><h3>No data yet</h3><p>Waiting for probe results for this target.</p></div>';
+                    return;
+                }
+
+                const rows = data.data;
+                const x = rows.map(d => new Date(d.period_start * 1000));
+                const median = rows.map(d => d.median_ms);
+                const minV = rows.map(d => d.min_ms);
+                const maxV = rows.map(d => d.max_ms);
+                const loss = rows.map(d => d.loss_pct);
+
+                // Smoke-style: upper bound (max), median line, lower bound (min)
+                const traces = [
+                    // Upper bound (invisible line for fill reference)
+                    {
+                        x, y: maxV,
+                        type: 'scatter', mode: 'lines',
+                        line: { color: 'rgba(79,195,247,0.15)', width: 0 },
+                        name: 'Max',
+                        showlegend: false,
+                        hoverinfo: 'skip',
+                    },
+                    // Median line
+                    {
+                        x, y: median,
+                        type: 'scatter', mode: 'lines',
+                        line: { color: '#ef5350', width: 2 },
+                        name: 'Median',
+                        fill: 'tonexty',
+                        fillcolor: 'rgba(79,195,247,0.12)',
+                    },
+                    // Lower bound (fills between min and median)
+                    {
+                        x, y: minV,
+                        type: 'scatter', mode: 'lines',
+                        line: { color: 'rgba(79,195,247,0.15)', width: 0 },
+                        name: 'Min',
+                        fill: 'tonexty',
+                        fillcolor: 'rgba(79,195,247,0.18)',
+                        showlegend: false,
+                        hoverinfo: 'skip',
+                    },
+                ];
+
+                // Packet loss as bar chart on secondary y-axis
+                const hasLoss = loss.some(l => l > 0);
+                if (hasLoss) {
+                    traces.push({
+                        x, y: loss,
+                        type: 'bar',
+                        name: 'Loss %',
+                        yaxis: 'y2',
+                        marker: {
+                            color: loss.map(l => l > 10 ? 'rgba(239,83,80,0.6)' : l > 2 ? 'rgba(255,167,38,0.4)' : 'rgba(102,187,106,0.2)'),
+                        },
+                        hovertemplate: 'Loss: %{y:.1f}%<extra></extra>',
+                    });
+                }
+
+                const layout = {
+                    paper_bgcolor: '#0f1117',
+                    plot_bgcolor: '#0f1117',
+                    font: { color: '#e0e0e0' },
+                    margin: { l: 60, r: 30, t: 30, b: 50 },
+                    xaxis: {
+                        type: 'date',
+                        gridcolor: '#2a2d3a',
+                        zerolinecolor: '#2a2d3a',
+                    },
+                    yaxis: {
+                        title: 'Latency (ms)',
+                        gridcolor: '#2a2d3a',
+                        zerolinecolor: '#2a2d3a',
+                        rangemode: 'tozero',
+                    },
+                    yaxis2: hasLoss ? {
+                        title: 'Loss %',
+                        overlaying: 'y',
+                        side: 'right',
+                        range: [0, 100],
+                        gridcolor: 'transparent',
+                        showgrid: false,
+                    } : undefined,
+                    showlegend: true,
+                    legend: { orientation: 'h', x: 0.5, y: 1.12, xanchor: 'center' },
+                    hovermode: 'x unified',
+                };
+
+                Plotly.newPlot(chartEl, traces, layout, { responsive: true });
+            } catch (e) {
+                chartEl.innerHTML = `<div class="no-data"><h3>Error loading data</h3><p>${e.message}</p></div>`;
+            }
+        }
+
+        // --- Navigation ---
+        function selectTarget(name) {
+            currentTarget = name;
+            renderSidebar();
+            renderDetail(name);
+        }
+
+        function showOverview() {
+            currentTarget = null;
+            document.getElementById('detail-view').classList.remove('visible');
+            document.getElementById('overview-view').style.display = '';
+            renderSidebar();
+            renderOverview();
+        }
+
+        // --- Time range ---
+        document.querySelectorAll('.time-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentRange = btn.dataset.range;
+                refresh();
+            });
+        });
+
+        // --- Data loading ---
+        async function refresh() {
+            try {
+                const resp = await fetchJSON('/api/targets');
+                targets = resp.targets;
+                renderSidebar();
+                if (currentTarget) {
+                    renderDetail(currentTarget);
+                } else {
+                    renderOverview();
+                }
+            } catch (e) {
+                console.error('Refresh failed:', e);
+            }
+        }
+
+        // --- Init ---
+        refresh();
+        // Auto-refresh every 30s
+        refreshTimer = setInterval(refresh, 30000);
+    </script>
+</body>
+</html>
