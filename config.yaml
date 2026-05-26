@@ -1,0 +1,73 @@
+# PingWatch Configuration
+# Modern Smokeping-like latency monitor
+
+general:
+  step: 60            # seconds between probe runs
+  pings: 20           # pings per target per step
+  owner: "pingwatch"
+  concurrent_probes: true
+  max_parallel: 10
+  offset: random      # randomise start to avoid herd
+
+probes:
+  - name: fping
+    type: fping
+    binary: /usr/bin/fping
+    pings: 20
+    timeout: 5.0
+
+  - name: icmp
+    type: icmp
+    pings: 20
+    timeout: 5.0
+
+  - name: http_check
+    type: http
+    timeout: 5.0
+
+  - name: dns_check
+    type: dns
+    timeout: 5.0
+
+  - name: tcp_443
+    type: tcp
+    port: 443
+    timeout: 5.0
+
+targets:
+  - name: DNS Servers
+    probe: fping
+    hosts:
+      - label: Cloudflare DNS
+        address: 1.1.1.1
+      - label: Google DNS
+        address: 8.8.8.8
+      - label: Quad9 DNS
+        address: 9.9.9.9
+
+  - name: Web Services
+    probe: http_check
+    hosts:
+      - label: Google
+        address: https://www.google.com
+      - label: Cloudflare
+        address: https://www.cloudflare.com
+
+  - name: DNS Resolution
+    probe: dns_check
+    hosts:
+      - label: Google DNS Query
+        address: google.com
+
+  - name: TCP Services
+    probe: tcp_443
+    hosts:
+      - label: Google HTTPS
+        address: www.google.com
+      - label: Cloudflare HTTPS
+        address: www.cloudflare.com
+
+storage:
+  backend: sqlite
+  path: ./data/pingwatch.db
+  retention_days: 365
