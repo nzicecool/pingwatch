@@ -349,6 +349,158 @@ class Storage:
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
+    async def get_target_detail(self, target: str, period_hours: int = 24) -> dict[str, Any] | None:
+        """Get detailed stats for a single target over a period."""
+        since = time.time() - (period_hours * 3600)
+
+        # Get summary
+        cursor = await self.db.execute(
+            """
+            SELECT
+                target_name,
+                probe_type,
+                COUNT(*) as sample_count,
+                AVG(median_ms) as avg_median,
+                MIN(min_ms) as overall_min,
+                MAX(max_ms) as overall_max,
+                AVG(loss_pct) as avg_loss,
+                AVG(jitter_ms) as avg_jitter
+            FROM measurements
+            WHERE target_name = ? AND timestamp >= ?
+            GROUP BY target_name, probe_type
+            """,
+            (target, since),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+
+        detail = dict(row)
+
+        # Get recent measurements for trend
+        cursor = await self.db.execute(
+            """
+            SELECT timestamp, median_ms, loss_pct, jitter_ms
+            FROM measurements
+            WHERE target_name = ? AND timestamp >= ?
+            ORDER BY timestamp ASC
+            LIMIT 100
+            """,
+            (target, since),
+        )
+        detail["measurements"] = [dict(r) for r in await cursor.fetchall()]
+
+        return detail
+
+    async def get_anomalies(self, period_hours: int = 1) -> list[dict[str, Any]]:
+        """Find measurements that are > 2x stddev from the 7-day baseline."""
+        since = time.time() - (period_hours * 3600)
+        baseline_since = time.time() - (7 * 86400)
+
+        # Compute baselines from last 7 days
+        cursor = await self.db.execute(
+            """
+            SELECT
+                target_name,
+                AVG(median_ms) as baseline_median,
+                AVG(loss_pct) as baseline_loss,
+                AVG(jitter_ms) as baseline_jitter
+            FROM measurements
+            WHERE timestamp >= ?
+            GROUP BY target_name
+            """,
+            (baseline_since,),
+        )
+        baselines = {r["target_name"]: dict(r) for r in await cursor.fetchall()}
+
+        if not baselines:
+            return []
+
+        # Find recent measurements exceeding 2x baseline (simplified stddev)
+        anomalies = []
+        cursor = await self.db.execute(
+            """
+            SELECT target_name, probe_type, timestamp, median_ms, loss_pct, jitter_ms
+            FROM measurements
+            WHERE timestamp >= ?
+            ORDER BY timestamp DESC
+            LIMIT 500
+            """,
+            (since,),
+        )
+        recent = await cursor.fetchall()
+
+        for row in recent:
+            r = dict(row)
+            baseline = baselines.get(r["target_name"])
+            if not baseline:
+                continue
+
+            # Check if median is > 2x baseline
+            bl_median = baseline.get("baseline_median") or 0
+            if bl_median > 0 and r.get("median_ms") and r["median_ms"] > bl_median * 2:
+                anomalies.append({
+                    **r,
+                    "baseline_median": round(bl_median, 2),
+                    "type": "high_latency",
+                })
+
+            # Check if loss is > 2x baseline
+            bl_loss = baseline.get("baseline_loss") or 0
+            if r.get("loss_pct", 0) > max(bl_loss * 2, 10):  # Also flag > 10% loss
+                anomalies.append({
+                    **r,
+                    "baseline_loss": round(bl_loss, 2),
+                    "type": "high_loss",
+                })
+
+        return anomalies[:50]  # Cap results
+
+    async def get_top_latency(self, period_hours: int = 1, limit: int = 10) -> list[dict[str, Any]]:
+        """Get worst-performing targets by median latency."""
+        since = time.time() - (period_hours * 3600)
+        cursor = await self.db.execute(
+            """
+            SELECT
+                target_name,
+                probe_type,
+                AVG(median_ms) as avg_median,
+                MAX(max_ms) as peak,
+                AVG(loss_pct) as avg_loss,
+                AVG(jitter_ms) as avg_jitter,
+                COUNT(*) as samples
+            FROM measurements
+            WHERE timestamp >= ?
+            GROUP BY target_name, probe_type
+            ORDER BY avg_median DESC
+            LIMIT ?
+            """,
+            (since, limit),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_top_loss(self, period_hours: int = 1, limit: int = 10) -> list[dict[str, Any]]:
+        """Get worst-performing targets by packet loss."""
+        since = time.time() - (period_hours * 3600)
+        cursor = await self.db.execute(
+            """
+            SELECT
+                target_name,
+                probe_type,
+                AVG(median_ms) as avg_median,
+                AVG(loss_pct) as avg_loss,
+                MAX(loss_pct) as peak_loss,
+                COUNT(*) as samples
+            FROM measurements
+            WHERE timestamp >= ?
+            GROUP BY target_name, probe_type
+            ORDER BY avg_loss DESC
+            LIMIT ?
+            """,
+            (since, limit),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
     async def prune(self, retention_days: int = 365) -> None:
         """Remove old measurements beyond retention period."""
         cutoff = time.time() - (retention_days * 86400)

@@ -71,3 +71,27 @@ storage:
   backend: sqlite
   path: ./data/pingwatch.db
   retention_days: 365
+
+# Alert rules — evaluate after each probe tick
+# alerts:
+#   - name: high_latency
+#     pattern: "loss > 10 and median > 100"
+#     duration: 5m
+#     notify:
+#       - type: webhook
+#         url: https://hooks.example.com/alert
+#       - type: log
+#
+#   - name: packet_loss
+#     pattern: "loss > 5"
+#     duration: 3m
+#     notify:
+#       - type: log
+
+# AI Network Briefer — disabled by default
+# ai:
+#   enabled: true
+#   model: "zai/glm-4.5-air"
+#   api_base: "https://api.zai.com/v1"
+#   api_key_env: "ZAI_API_KEY"
+#   max_context_tokens: 4000

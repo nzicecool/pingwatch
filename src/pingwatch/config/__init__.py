@@ -52,6 +52,16 @@ class AlertConfig(BaseModel):
     notify: list[AlertNotify] = Field(default_factory=list)
 
 
+class AIConfig(BaseModel):
+    """AI Network Briefer configuration."""
+
+    enabled: bool = False
+    model: str = "zai/glm-4.5-air"
+    api_base: str = "https://api.zai.com/v1"
+    api_key_env: str = "ZAI_API_KEY"
+    max_context_tokens: int = 4000
+
+
 class StorageConfig(BaseModel):
     """Storage backend configuration."""
 
@@ -79,6 +89,7 @@ class PingWatchConfig(BaseModel):
     targets: list[TargetGroup] = Field(default_factory=list)
     alerts: list[AlertConfig] = Field(default_factory=list)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    ai: AIConfig = Field(default_factory=AIConfig)
 
     @field_validator("probes", "targets", mode="before")
     @classmethod

@@ -133,7 +133,7 @@ async def run_serve(config_path: str, host: str = "0.0.0.0", port: int = 8080) -
 
     # Create FastAPI app with storage
     from pingwatch.api.app import create_app
-    app = create_app(storage)
+    app = create_app(storage, ai_config=config.ai.model_dump() if config.ai else None)
 
     # Configure uvicorn
     uv_config = uvicorn.Config(app, host=host, port=port, log_level="info")

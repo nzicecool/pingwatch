@@ -10,14 +10,15 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment, FileSystemLoader
+from pydantic import BaseModel
 
 from pingwatch.storage import Storage
 
 # Resolve templates directory (next to this package)
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 
-# Pydantic response models (inline for simplicity)
-from pydantic import BaseModel
+
+# --- Pydantic response models ---
 
 
 class TargetInfo(BaseModel):
@@ -101,11 +102,50 @@ class HealthResponse(BaseModel):
     uptime_seconds: float
 
 
-def create_app(storage: Storage) -> FastAPI:
+# AI response models
+
+
+class BriefingResponse(BaseModel):
+    enabled: bool
+    period: str
+    briefing: str | None = None
+    message: str | None = None
+
+
+class AnalysisResponse(BaseModel):
+    enabled: bool
+    target: str
+    period_hours: int
+    analysis: str | None = None
+    message: str | None = None
+
+
+class ScoreResponse(BaseModel):
+    enabled: bool
+    score: float | None = None
+    grade: str | None = None
+    target_count: int | None = None
+    breakdown: dict[str, float] | None = None
+    message: str | None = None
+
+
+class AskRequest(BaseModel):
+    question: str
+
+
+class AskResponse(BaseModel):
+    enabled: bool
+    question: str
+    answer: str | None = None
+    message: str | None = None
+
+
+def create_app(storage: Storage, ai_config: dict[str, Any] | None = None) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
         storage: Connected Storage instance.
+        ai_config: AI configuration dict (from PingWatchConfig.ai).
 
     Returns:
         Configured FastAPI app.
@@ -125,6 +165,18 @@ def create_app(storage: Storage) -> FastAPI:
     )
 
     start_time = time.time()
+
+    # Lazy-init briefer
+    _briefer = None
+
+    def get_briefer():
+        nonlocal _briefer
+        if _briefer is None and ai_config:
+            from pingwatch.ai.briefer import NetworkBriefer
+            _briefer = NetworkBriefer(storage, ai_config)
+        return _briefer
+
+    # --- Core API ---
 
     @app.get("/api/health", response_model=HealthResponse)
     async def health():
@@ -201,6 +253,52 @@ def create_app(storage: Storage) -> FastAPI:
             targets=[TargetSummary(**t) for t in targets],
             count=len(targets),
         )
+
+    # --- AI API ---
+
+    @app.get("/api/ai/briefing", response_model=BriefingResponse)
+    async def ai_briefing(period: str = Query("1h", description="Period: 1h, 6h, 24h, 7d")):
+        """Generate a network health briefing using AI."""
+        briefer = get_briefer()
+        if not briefer or not briefer.enabled:
+            return BriefingResponse(enabled=False, period=period, message="AI not configured")
+
+        period_map = {"1h": 1, "6h": 6, "24h": 24, "7d": 168}
+        hours = period_map.get(period, 1)
+        briefing = await briefer.generate_briefing(hours)
+        return BriefingResponse(enabled=True, period=period, briefing=briefing)
+
+    @app.get("/api/ai/analyze/{target}", response_model=AnalysisResponse)
+    async def ai_analyze(target: str, period_hours: int = Query(24, ge=1, le=168)):
+        """Deep analysis of a specific target using AI."""
+        briefer = get_briefer()
+        if not briefer or not briefer.enabled:
+            return AnalysisResponse(enabled=False, target=target, period_hours=period_hours, message="AI not configured")
+
+        analysis = await briefer.analyze_target(target, period_hours)
+        return AnalysisResponse(enabled=True, target=target, period_hours=period_hours, analysis=analysis)
+
+    @app.get("/api/ai/score", response_model=ScoreResponse)
+    async def ai_score(period_hours: int = Query(1, ge=1, le=168)):
+        """Network health score (0-100). Deterministic, no LLM needed."""
+        briefer = get_briefer()
+        if not briefer:
+            return ScoreResponse(enabled=False, message="AI not configured")
+
+        result = await briefer.compute_network_score(period_hours)
+        return ScoreResponse(enabled=True, **result)
+
+    @app.post("/api/ai/ask", response_model=AskResponse)
+    async def ai_ask(request: AskRequest):
+        """Free-form Q&A about network state."""
+        briefer = get_briefer()
+        if not briefer or not briefer.enabled:
+            return AskResponse(enabled=False, question=request.question, message="AI not configured")
+
+        answer = await briefer.ask(request.question)
+        return AskResponse(enabled=True, question=request.question, answer=answer)
+
+    # --- Dashboard ---
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard():

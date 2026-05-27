@@ -13,6 +13,11 @@ from pingwatch.config import PingWatchConfig, ProbeConfig, TargetGroup
 from pingwatch.probes import BaseProbe, ProbeResult
 from pingwatch.storage import Storage
 
+try:
+    from pingwatch.alerts import AlertEngine
+except ImportError:
+    AlertEngine = None  # type: ignore[assignment,misc]
+
 logger = structlog.get_logger()
 
 
@@ -26,6 +31,7 @@ class ProbeScheduler:
         self._targets: list[TargetGroup] = []
         self._running = False
         self._task: asyncio.Task | None = None
+        self._alert_engine: AlertEngine | None = None
 
     def initialise(self) -> None:
         """Build probe instances and target list from config."""
@@ -44,6 +50,15 @@ class ProbeScheduler:
             probes=list(self._probes.keys()),
             target_groups=[t.name for t in self._targets],
         )
+
+        # Initialise alert engine if rules are configured
+        if self.config.alerts and AlertEngine is not None:
+            self._alert_engine = AlertEngine(
+                rules=self.config.alerts,
+                storage=self.storage,
+                step_seconds=self.config.general.step,
+            )
+            logger.info("scheduler.alerts_loaded", rules=len(self.config.alerts))
 
     async def start(self) -> None:
         """Start the scheduler loop."""
@@ -87,6 +102,9 @@ class ProbeScheduler:
                         results=len(results),
                         elapsed=f"{time.monotonic() - tick_start:.2f}s",
                     )
+                    # Evaluate alert rules
+                    if self._alert_engine:
+                        await self._alert_engine.evaluate(results)
             except Exception as e:
                 logger.error("scheduler.tick_error", error=str(e))
 
